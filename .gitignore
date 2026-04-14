@@ -1,0 +1,14 @@
+# Raw data (not versioned)
+data/raw/
+
+# R environment artifacts
+.Rhistory
+.RData
+.Rproj.user/
+
+# renv library (only lock file is versioned)
+renv/library/
+renv/staging/
+
+# RDS files in raw only
+data/raw/*.rds
