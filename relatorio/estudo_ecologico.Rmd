@@ -2,7 +2,7 @@
 title: "Estudo Ecológico: População em Aglomerados Subnormais no Brasil"
 subtitle: "Análise por Unidade da Federação — Censo Demográfico IBGE 2022"
 author: "czanchetta"
-date: "`r format(Sys.Date(), '%d de %B de %Y')`"
+date: "14 de abril de 2026"
 output:
   html_document:
     toc: true
