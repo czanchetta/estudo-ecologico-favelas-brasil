@@ -1,0 +1,338 @@
+---
+title: "Estudo Ecológico: População em Aglomerados Subnormais no Brasil"
+subtitle: "Análise por Unidade da Federação — Censo Demográfico IBGE 2022"
+author: "czanchetta"
+date: "`r format(Sys.Date(), '%d de %B de %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    number_sections: true
+    df_print: paged
+# output:
+#   pdf_document:
+#     toc: true
+#     number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  out.width = "100%"
+)
+
+# Set working directory to project root (one level above relatorio/)
+proj_root <- normalizePath(file.path(dirname(knitr::current_input(dir = TRUE)), ".."))
+knitr::opts_knit$set(root.dir = proj_root)
+setwd(proj_root)
+
+# Run pipeline scripts if processed data not yet available
+if (!file.exists(file.path(proj_root, "data/processed/census_clean.rds"))) {
+  source(file.path(proj_root, "R/02_clean.R"))
+}
+if (!file.exists(file.path(proj_root, "data/processed/rates.rds"))) {
+  source(file.path(proj_root, "R/03_rates.R"))
+}
+
+library(tidyverse)
+library(kableExtra)
+library(scales)
+library(ggplot2)
+library(ggrepel)
+library(geobr)
+library(sf)
+library(broom)
+library(patchwork)
+library(RColorBrewer)
+
+# Load processed data
+data_clean <- readRDS("data/processed/census_clean.rds")
+uf_data    <- data_clean$uf
+rates      <- readRDS("data/processed/rates.rds")
+
+# Add state abbreviations
+siglas <- tibble(
+  state_code = c(11,12,13,14,15,16,17,
+                 21,22,23,24,25,26,27,28,29,
+                 31,32,33,35,
+                 41,42,43,
+                 50,51,52,53),
+  sigla = c("RO","AC","AM","RR","PA","AP","TO",
+            "MA","PI","CE","RN","PB","PE","AL","SE","BA",
+            "MG","ES","RJ","SP",
+            "PR","SC","RS",
+            "MS","MT","GO","DF")
+)
+rates <- rates |> left_join(siglas, by = "state_code")
+
+# Common theme
+theme_estudo <- theme_minimal(base_size = 12) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 11),
+    plot.caption  = element_text(size = 8, color = "grey50"),
+    legend.position = "bottom"
+  )
+```
+
+---
+
+# Introdução
+
+Os aglomerados subnormais — popularmente conhecidos como favelas, comunidades, invasões ou grotas — representam uma das expressões mais visíveis da desigualdade urbana brasileira. Trata-se de assentamentos caracterizados por irregularidade fundiária, precariedade habitacional e insuficiência de infraestrutura urbana básica. O Instituto Brasileiro de Geografia e Estatística (IBGE), em seu Censo Demográfico de 2022, adotou a denominação **Favelas e Comunidades Urbanas** para esse universo, reforçando a relevância do tema no debate sobre desenvolvimento social e saúde coletiva.
+
+Do ponto de vista epidemiológico, o contexto habitacional é um determinante social fundamental da saúde. Populações residentes em aglomerados subnormais enfrentam maior exposição a condições que aumentam o risco de doenças transmissíveis, violência, agravos ambientais e acesso reduzido a serviços de saúde. A compreensão da distribuição geográfica dessa população e de seus correlatos socioeconômicos constitui, portanto, uma etapa indispensável à formulação de políticas de saúde equitativas.
+
+Este estudo ecológico tem por objetivos:
+
+1. Estimar a proporção da população brasileira residente em aglomerados subnormais por **Unidade da Federação (UF)**, com base nos dados do Censo IBGE 2022;
+2. Calcular **taxas brutas** e **taxas padronizadas por idade e sexo** (padronização direta) para cada UF;
+3. Explorar a associação entre o **rendimento domiciliar per capita** médio estadual e a taxa padronizada de residência em aglomerados subnormais.
+
+A justificativa do desenho ecológico reside na disponibilidade dos dados: o Censo 2022 oferece contagens completas de população por aglomerado subnormal, mas sem vinculação individual a desfechos de saúde. A unidade de análise é, portanto, a UF — e as inferências são restritas a este nível agregado.
+
+---
+
+# Métodos
+
+## Fonte de dados
+
+Os dados utilizados foram obtidos por meio da **API SIDRA v3** do IBGE, acessada programaticamente em R. Foram utilizadas três tabelas do Censo Demográfico 2022:
+
+| Tabela SIDRA | Conteúdo | Variável |
+|---|---|---|
+| **9884** | População residente em Favelas e Comunidades Urbanas, por sexo e grupo de idade | 9612 |
+| **9514** | População residente total, por sexo e idade | 93 |
+| **10295** | Valor do rendimento nominal médio mensal domiciliar per capita | 13431 |
+
+## Nível de agregação
+
+A análise foi conduzida no nível estadual (27 UFs: 26 estados + Distrito Federal). Não há inferências sobre municípios, regiões metropolitanas ou indivíduos.
+
+## Cálculo das taxas
+
+### Taxa bruta
+
+$$\text{Taxa bruta}_{UF} = \frac{\text{Pop. em aglomerados subnormais}_{UF}}{\text{Pop. total}_{UF}} \times 100$$
+
+### Padronização direta por idade e sexo
+
+A padronização direta permite comparar taxas entre UFs controlando diferenças na estrutura etária e de sexo das populações. A **população padrão** utilizada foi a população brasileira total do Censo 2022 (soma de todos os UFs, $\approx$ 203 milhões de pessoas).
+
+Para cada UF, a taxa padronizada é calculada como:
+
+$$\text{Taxa padronizada}_{UF} = \sum_{i,j} \left( \frac{\text{Pop. sub}_{ij,UF}}{\text{Pop. total}_{ij,UF}} \times \frac{\text{Pop. padrão}_{ij}}{\text{Pop. padrão total}} \right) \times 100$$
+
+onde $i$ = grupo etário quinquenal (0–4, 5–9, ..., 95–99, 100+ anos) e $j$ = sexo (Homens, Mulheres). A padronização resultou em 42 células (21 grupos etários × 2 sexos) por UF.
+
+**Validação interna:** a taxa padronizada nacional (todos os UFs agregados usando a própria população como padrão) deve ser idêntica à taxa bruta nacional. A diferença observada foi de 0,000000 pontos percentuais, confirmando a correção do cálculo.
+
+## Análise de correlação
+
+A associação entre renda per capita estadual e taxa padronizada de aglomerados subnormais foi avaliada por regressão linear (OLS), com cálculo do coeficiente de Pearson ($r$), $R^2$ e p-valor.
+
+## Processamento computacional
+
+Análises realizadas em **R 4.3.3** com os pacotes `tidyverse`, `geobr`, `ggplot2`, `ggrepel`, `broom`, `patchwork` e `writexl`. Controle de ambiente via `renv`.
+
+---
+
+# Resultados
+
+## Estatísticas descritivas
+
+```{r tab-descritiva}
+tab_desc <- rates |>
+  arrange(desc(crude_rate)) |>
+  select(
+    `UF`                         = state_name,
+    `Sigla`                      = sigla,
+    `Pop. Total`                 = pop_total,
+    `Pop. Aglom. Subnormal`      = pop_subnormal,
+    `Taxa Bruta (%)`             = crude_rate,
+    `Taxa Padronizada (%)`       = standardized_rate,
+    `Renda per capita (R$)`      = income_pc
+  ) |>
+  mutate(
+    `Pop. Total`            = format(`Pop. Total`,           big.mark=".", decimal.mark=","),
+    `Pop. Aglom. Subnormal` = format(`Pop. Aglom. Subnormal`, big.mark=".", decimal.mark=","),
+    `Taxa Bruta (%)`         = round(`Taxa Bruta (%)`, 2),
+    `Taxa Padronizada (%)`   = round(`Taxa Padronizada (%)`, 2),
+    `Renda per capita (R$)`  = round(`Renda per capita (R$)`, 2)
+  )
+
+kable(tab_desc,
+      caption = "Tabela 1. Taxa bruta e padronizada de população em aglomerados subnormais por UF — Brasil, Censo 2022",
+      align = c("l","c","r","r","r","r","r")) |>
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = TRUE, font_size = 13) |>
+  row_spec(0, bold = TRUE)
+```
+
+**Nota:** Ordenado por taxa bruta decrescente. O total nacional de população em aglomerados subnormais foi de **`r format(sum(rates$pop_subnormal), big.mark=".", decimal.mark=",")`** pessoas, representando **`r round(sum(rates$pop_subnormal)/sum(rates$pop_total)*100, 2)`%** da população brasileira (Censo 2022).
+
+## Mapa coroplético — taxa padronizada por UF
+
+```{r mapa, fig.width=10, fig.height=8}
+estados <- read_state(year = 2020, showProgress = FALSE)
+map_data <- estados |>
+  left_join(rates, by = c("code_state" = "state_code"))
+
+ggplot(map_data) +
+  geom_sf(aes(fill = standardized_rate), color = "white", linewidth = 0.3) +
+  scale_fill_distiller(
+    palette  = "YlOrRd",
+    direction = 1,
+    name     = "Taxa padronizada (%)",
+    labels   = label_number(suffix = "%", accuracy = 0.1)
+  ) +
+  labs(
+    title   = "Taxa Padronizada de População em Aglomerados Subnormais por UF — Brasil, Censo 2022",
+    caption = "Fonte: IBGE, Censo 2022 | Tabela 9884"
+  ) +
+  theme_void(base_size = 11) +
+  theme(
+    plot.title   = element_text(face = "bold", size = 10, hjust = 0.5),
+    plot.caption = element_text(size = 8, color = "grey50", hjust = 1),
+    legend.position = "bottom",
+    legend.key.width = unit(1.5, "cm")
+  )
+```
+
+**Figura 1.** O mapa evidencia uma concentração de altas taxas na **Região Norte**, com destaque para Amazonas (`r round(rates |> filter(sigla=="AM") |> pull(standardized_rate), 1)`%) e Amapá (`r round(rates |> filter(sigla=="AP") |> pull(standardized_rate), 1)`%). Espírito Santo e Rio de Janeiro destacam-se no Sudeste.
+
+## Comparação: taxa bruta vs. taxa padronizada
+
+```{r barras, fig.width=12, fig.height=10}
+rates_ordered <- rates |>
+  arrange(desc(crude_rate)) |>
+  mutate(state_label = factor(sigla, levels = sigla))
+
+rates_long <- rates_ordered |>
+  pivot_longer(cols = c(crude_rate, standardized_rate),
+               names_to = "tipo", values_to = "taxa") |>
+  mutate(tipo = recode(tipo,
+                       crude_rate        = "Taxa Bruta",
+                       standardized_rate = "Taxa Padronizada"))
+
+group1 <- levels(rates_long$state_label)[1:14]
+group2 <- levels(rates_long$state_label)[15:27]
+
+make_bar <- function(states, show_legend = FALSE) {
+  ggplot(rates_long |> filter(state_label %in% states),
+         aes(x = state_label, y = taxa, fill = tipo)) +
+    geom_col(position = position_dodge(0.8), width = 0.7) +
+    scale_fill_manual(
+      values = c("Taxa Bruta" = "#4393c3", "Taxa Padronizada" = "#d6604d"),
+      name = ""
+    ) +
+    scale_y_continuous(labels = label_number(suffix = "%", accuracy = 0.1),
+                       limits = c(0, NA), expand = expansion(mult = c(0, 0.05))) +
+    labs(x = NULL, y = "Taxa (%)") +
+    theme_estudo +
+    theme(legend.position = if (show_legend) "bottom" else "none",
+          axis.text.x = element_text(size = 9))
+}
+
+(make_bar(group1) / make_bar(group2, show_legend = TRUE)) +
+  plot_annotation(
+    title   = "Taxa Bruta vs Taxa Padronizada de Aglomerados Subnormais por UF — Brasil, Censo 2022",
+    caption = "Fonte: IBGE, Censo 2022 | Ordenado por taxa bruta decrescente",
+    theme   = theme(
+      plot.title   = element_text(face = "bold", size = 11),
+      plot.caption = element_text(size = 8, color = "grey50")
+    )
+  )
+```
+
+**Figura 2.** As taxas bruta e padronizada são geralmente próximas, indicando que as diferenças entre UFs não se devem primariamente à estrutura etária. A padronização tem maior impacto em estados com populações mais jovens (ex.: Amapá, onde a taxa padronizada é ligeiramente menor que a bruta).
+
+## Correlação com renda per capita
+
+```{r scatter, fig.width=10, fig.height=7}
+model  <- lm(standardized_rate ~ income_pc, data = rates)
+tidy_m <- tidy(model)
+r2     <- summary(model)$r.squared
+pearson <- cor(rates$income_pc, rates$standardized_rate)
+pval   <- tidy_m |> filter(term == "income_pc") |> pull(p.value)
+
+annotation_text <- sprintf(
+  "R² = %.3f\nr = %.3f\np = %s",
+  r2, pearson,
+  ifelse(pval < 0.001, "< 0,001", sprintf("%.3f", pval))
+)
+
+ggplot(rates, aes(x = income_pc, y = standardized_rate)) +
+  geom_smooth(method = "lm", se = TRUE, color = "#2166ac", fill = "#abd9e9",
+              alpha = 0.3, linewidth = 0.8) +
+  geom_point(color = "#d73027", size = 2.5, alpha = 0.8) +
+  geom_label_repel(aes(label = sigla), size = 2.8, max.overlaps = 27,
+                   box.padding = 0.3, segment.color = "grey60") +
+  annotate("label", x = Inf, y = Inf, hjust = 1.05, vjust = 1.3,
+           label = annotation_text, size = 3.2, color = "grey20", fill = "grey95") +
+  scale_x_continuous(labels = label_dollar(prefix = "R$ ", big.mark = ".", decimal.mark = ",")) +
+  scale_y_continuous(labels = label_number(suffix = "%", accuracy = 0.1)) +
+  labs(
+    title   = "Renda Per Capita vs Taxa Padronizada de Aglomerados Subnormais — Brasil, Censo 2022",
+    x       = "Rendimento domiciliar per capita médio (R$)",
+    y       = "Taxa padronizada (%)",
+    caption = "Fonte: IBGE, Censo 2022 | Regressão OLS com IC 95%"
+  ) +
+  theme_estudo
+```
+
+**Figura 3.** A análise de correlação entre renda per capita e taxa padronizada revelou associação negativa ($r$ = `r round(pearson, 3)`, $R^2$ = `r round(r2, 3)`, p = `r ifelse(pval < 0.001, "< 0,001", round(pval, 3))`), indicando que estados com maior renda tendem a ter menor prevalência de população em aglomerados subnormais. Contudo, o coeficiente de determinação baixo e o p-valor limítrofe sugerem que a renda explica apenas parcialmente essa variação no nível estadual.
+
+---
+
+# Discussão
+
+Os resultados indicam heterogeneidade expressiva na distribuição de população em aglomerados subnormais entre as UFs brasileiras. O Amazonas apresenta a maior taxa padronizada (`r round(rates |> filter(sigla=="AM") |> pull(standardized_rate), 1)`%), seguido por Amapá (`r round(rates |> filter(sigla=="AP") |> pull(standardized_rate), 1)`%) e Pará (`r round(rates |> filter(sigla=="PA") |> pull(standardized_rate), 1)`%), sugerindo que condições específicas da Região Norte — incluindo padrão de urbanização, fragilidade fundiária e pressão migratória para centros urbanos — contribuem para maior concentração de moradores em assentamentos informais.
+
+A proximidade entre taxas brutas e padronizadas indica que a estrutura etária das populações estaduais tem impacto limitado nas comparações entre UFs. Isso é esperado em um contexto onde as populações adultas jovens predominam amplamente nos aglomerados subnormais em todo o território nacional.
+
+A associação inversa entre renda per capita e proporção de população em aglomerados subnormais é consistente com determinantes socioeconômicos estruturais. Contudo, a magnitude modesta do $R^2$ (`r round(r2, 3)`) e o p-valor de `r round(pval, 3)` apontam para a insuficiência da renda per capita estadual como único preditor, o que é esperado: outros fatores como mercado fundiário, políticas habitacionais, histórico de urbanização e composição migratória contribuem de forma independente.
+
+Destaca-se que o Espírito Santo e o Rio de Janeiro apresentam taxas padronizadas elevadas apesar de rendas per capita intermediárias-altas, refletindo processos históricos de favelização em grandes aglomerados urbanos (Região Metropolitana da Grande Vitória e Região Metropolitana do Rio de Janeiro).
+
+---
+
+# Limitações
+
+Este estudo apresenta limitações inerentes ao seu desenho ecológico, que devem ser consideradas na interpretação dos resultados:
+
+1. **Falácia ecológica:** As associações observadas no nível estadual não podem ser extrapoladas para o nível individual. Um estado com alta taxa de população em aglomerados subnormais e alta renda pode ter, individualmente, os moradores mais ricos não sendo os residentes em favelas.
+
+2. **Pequeno número de unidades de análise (n = 27 UFs):** O poder estatístico para detectar associações é limitado. Análises em nível municipal proporcionariam maior variabilidade e robustez estatística.
+
+3. **Impossibilidade de inferência causal:** O desenho transversal ecológico não permite estabelecer relações causais entre as variáveis estudadas.
+
+4. **Limitações do conceito de aglomerado subnormal como proxy de favela:** O critério do IBGE captura um conjunto específico de assentamentos identificados a priori pelos setores censitários. Assentamentos precários isolados ou em processo inicial de formação podem não ser captados, possivelmente subestimando a real proporção de moradores em condições habitacionais inadequadas.
+
+5. **Variável de renda:** O rendimento domiciliar per capita médio é derivado do questionário amostral do Censo 2022 (~10% dos domicílios), o que implica maior incerteza de estimativa em estados menores.
+
+6. **Ausência de ajuste por confundidores:** Outras variáveis potencialmente confundidoras (taxa de urbanização, densidade populacional, acesso a saneamento) não foram incluídas na análise de correlação.
+
+---
+
+# Referências
+
+- Instituto Brasileiro de Geografia e Estatística — IBGE. **Censo Demográfico 2022: Favelas e Comunidades Urbanas**. Rio de Janeiro: IBGE, 2024. Disponível em: <https://www.ibge.gov.br>
+
+- Instituto Brasileiro de Geografia e Estatística — IBGE. **API SIDRA v3** — Sistema IBGE de Recuperação Automática. Disponível em: <https://servicodados.ibge.gov.br/api/docs/agregados>
+
+- SZKLO, M.; NIETO, F.J. **Epidemiology: Beyond the Basics**. 4th ed. Burlington: Jones & Bartlett Learning, 2019.
+
+- ROTHMAN, K.J.; GREENLAND, S.; LASH, T.L. **Modern Epidemiology**. 3rd ed. Philadelphia: Lippincott Williams & Wilkins, 2008.
+
+- Pebesma E (2018). "Simple Features for R: Standardized Support for Spatial Vector Data." *The R Journal*, 10(1), 439–446.
+
+- Freire D, Cota W, Carvalho L (2023). **geobr: Loads Shapefiles of Official Spatial Data Sets of Brazil**. R package version 1.9.0.
+
+---
+
+*Análise realizada com dados públicos do Censo Demográfico 2022 (IBGE).*
